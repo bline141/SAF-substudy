@@ -63,31 +63,6 @@ wmh_fazekas_data$patient_ID <- sprintf("%s-%s", ifelse(wmh_fazekas_data$CntNo < 
 pvs_data$patient_ID <- substr(as.character(pvs_data$file), 1, 7)
 colnames(clinical_data)[colnames(clinical_data) == "pat.id"] <- "patient_ID"
 ```
-```
-## Prepare specific subvariables
-
-### PVS
-# Create new variables pvs_cso, pvs_bg, SCPVS and BGPVS with default value NA
-pvs_data$pvs_cso <- NA
-pvs_data$pvs_bg <- NA
-pvs_data$SCPVS <- NA
-pvs_data$BGPVS <- NA
-
-# Set SCPVS = 1 where "SCPVS" is in the file name
-pvs_data$SCPVS[grepl("SCPVS", pvs_data$file)] <- 1
-pvs_data$SCPVS[is.na(pvs_data$SCPVS)] <- 0
-
-# Set BGPVS = 1 where "BGPVS" is in the file name
-pvs_data$BGPVS[grepl("BGPVS", pvs_data$file)] <- 1
-pvs_data$BGPVS[is.na(pvs_data$BGPVS)] <- 0
-
-# Update pvs_bg and pvs_cso based on BGPVS and SCPVS
-pvs_data$pvs_bg[pvs_data$BGPVS == 1] <- pvs_data$`PVS.count(-)...10`[pvs_data$BGPVS == 1]
-pvs_data$pvs_cso[pvs_data$SCPVS == 1] <- pvs_data$`PVS.count(-)...10`[pvs_data$SCPVS == 1]
-
-###WMH
-
-```
 
 # Phenotype Classification {#phenotypeclassification}
 
