@@ -1,0 +1,293 @@
+---
+title: "Swiss AF substudy"
+author: "Nelly Blindenbacher"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+
+library(table1)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(readxl)
+library(tableone)
+library(rstatix)
+library(ggplot2)  # for plotting
+library(gridExtra)  # for arranging plots
+```
+
+
+1. [Introduction](#introduction)
+2. [Data Import](#dataimport)
+3. [Phenotype Classification](#phenotypeclassification)
+4. [SVD and CAA burdes scores](#svdandcaaburdenscores)
+5. [Statistical Analysis](#statisticalanalysis)
+   - [Exploratory Data Analysis](#exploratorydataanalysis)
+   - [Table One](#tableone)
+   - [Statistical Tests](#statisticaltests)
+
+# Introduction {#introduction}
+
+Atrial fibrillation (AF) and cerebral small vessel disease (SVD) are two conditions closely linked with an increased risk of stroke and cognitive decline. Both conditions share overlapping risk factors and exhibit a considerable impact on public health, particularly among the elderly. There are two primary forms of age-related SVD: hypertension-associated deep perforator arteriolopathy (DPA) and cerebral amyloid angiopathy (CAA). Understanding the prevalence, type, and burden of SVD is critical for assessing cognitive function in patients with AF.
+
+In this study, we aim to explore the relationship between SVD type and burden with cognitive function in patients with AF. Our analysis will utilize data from the Swiss-AF cohort, a prospective study that includes patients with AF who undergo baseline and follow-up MRI scans, cognitive function tests, and regular clinical follow-ups.
+
+Using baseline MRI data, we will classify patients based on the type of SVD (DPA, CAA, mixed CAA-DPA, undetermined, or no SVD) and assess the overall SVD burden. 
+
+
+# Data Import {#dataimport}
+
+In this section, multiple data files are read into R from various formats including Excel and CSV files. The data sets contain information from different aspects of the SwissAF study. After loading the data, the patient ID variable is standardized across all data sets to ensure consistency.
+
+```
+# Loading and Standardizing Patient Data from Multiple Sources
+## Read data from multiple files
+ich_css_data <-read_xlsx("Test Data/SwissAF_BleedingandCSS.xlsx")
+cmb_data <- read_xlsx("Test Data/SwissAF_MARS_bs_2021-10-25.xlsx")
+lacune_data <- read_csv("Test Data/SwissAF_nonembolic_localization.csv", skip=4)
+wmh_fazekas_data <- read_xlsx("Test Data/SwissAF_Fazekas_y2_20200226.xlsx")
+wmh_data <- read_csv("Test Data/SwissAF_SVD_localization.csv", skip=4)
+pvs_data <- read_xlsx("Test Data/SiwssAF_PVSanalysis_02032023.xlsx", skip=2)
+clinical_data <- read_csv("Test Data/clinical_data_cognition.csv")
+```
+```
+## Standardisation of the patient-ID variable
+colnames(cmb_data)[colnames(cmb_data) == "ID"] <- "patient_ID"
+lacune_data$patient_ID <- substr(as.character(lacune_data$`CSV file`), 1, 7)
+wmh_fazekas_data$patient_ID <- sprintf("%s-%s", ifelse(wmh_fazekas_data$CntNo < 10, paste0("0", wmh_fazekas_data$CntNo), wmh_fazekas_data$CntNo), wmh_fazekas_data$PatNo)
+pvs_data$patient_ID <- substr(as.character(pvs_data$file), 1, 7)
+colnames(clinical_data)[colnames(clinical_data) == "pat.id"] <- "patient_ID"
+```
+```
+## Prepare specific subvariables
+
+### PVS
+# Create new variables pvs_cso, pvs_bg, SCPVS and BGPVS with default value NA
+pvs_data$pvs_cso <- NA
+pvs_data$pvs_bg <- NA
+pvs_data$SCPVS <- NA
+pvs_data$BGPVS <- NA
+
+# Set SCPVS = 1 where "SCPVS" is in the file name
+pvs_data$SCPVS[grepl("SCPVS", pvs_data$file)] <- 1
+pvs_data$SCPVS[is.na(pvs_data$SCPVS)] <- 0
+
+# Set BGPVS = 1 where "BGPVS" is in the file name
+pvs_data$BGPVS[grepl("BGPVS", pvs_data$file)] <- 1
+pvs_data$BGPVS[is.na(pvs_data$BGPVS)] <- 0
+
+# Update pvs_bg and pvs_cso based on BGPVS and SCPVS
+pvs_data$pvs_bg[pvs_data$BGPVS == 1] <- pvs_data$`PVS.count(-)...10`[pvs_data$BGPVS == 1]
+pvs_data$pvs_cso[pvs_data$SCPVS == 1] <- pvs_data$`PVS.count(-)...10`[pvs_data$SCPVS == 1]
+
+###WMH
+
+```
+
+# Phenotype Classification {#phenotypeclassification}
+
+In this section, we create a new dataframe that combines age and imaging variables related to small vessel disease (SVD) phenotypes. The dataframe includes patient IDs and metrics from various data sources. We then classify patients into specific phenotypes, such as cerebral amyloid angiopathy (CAA), deep perforator arteriopathy (DPA), mixed CAA-DPA, patients with no MRI-visible signs of SVD and unspecific SVD, using predefined criteria
+
+```
+# Phenotype Classification based on age and MRI Data
+## Creating a new dataframe with the specified variables
+dataframe_phenotypes <- data.frame(
+  patient_ID = clinical_data$patient_ID,
+  age = clinical_data$age.bl,
+  ich_lobar = ich_css_data$ich_lobar,
+  cmb_lobar = cmb_data$CMB_lobar_count, 
+  css = ich_css_data$css, 
+  pvs_cso = pvs_data$pvs_cso,
+  wmh_subcortical = wmh_data$wmh_subcortical_summation,
+  deep_hemorrhagic_lesion = NA,
+  lacune_deep = lacune_data$lacune_deep_summation,
+  wmh_deep = wmh_data$wmh_deep_summation,
+  wmh_bg = wmh_data$wmh_basalganglia_summation,
+  pvs_bg = pvs_data$pvs_bg,
+  svd_signs = sum(allsigns),
+  phenotype = NA)
+
+## Creating mask for CAA criteria
+CAA_mask <- with(dataframe_phenotypes, 
+                 age >= 50 &
+                 ((ich_lobar >= 1 | cmb_lobar >= 1 | css >= 1) |
+                  (pvs_cso > 20 | wmh_subcortical > 10)) &
+                 is.na(deep_hemorrhagic_lesion) | deep_hemorrhagic_lesion == 0)
+
+## Add "CAA" label to a new column phenotype only for TRUE values in CAA_mask
+dataframe_phenotypes$phenotype <- ifelse(CAA_mask, "CAA", dataframe_phenotypes$phenotype)
+
+## Creating mask for DPA criteria 
+DPA_mask <- with(dataframe_phenotypes, 
+                 lacune_deep > 0 | wmh_deep > 0 | wmh_bg > 0 | pvs_bg > 0)
+
+## Update phenotype column based on DPA_mask and existing values to generate Mixed CAA-DPA
+dataframe_phenotypes$phenotype <- ifelse(dataframe_phenotypes$phenotype == "CAA" & !DPA_mask, "CAA",
+                                  ifelse(DPA_mask & dataframe_phenotypes$phenotype == "", "DPA",
+                                  ifelse(DPA_mask & dataframe_phenotypes$phenotype == "CAA", "Mixed CAA-DPA",
+                                  dataframe_phenotypes$phenotype)))
+
+## Creating mask for No MRI-visible signs of SVD
+SVD_mask <- with(dataframe_phenotypes, 
+                 svd_signs == 0)
+
+## Add " No MRI-visible signs of SVD" label to a new column phenotype only for TRUE values in SVD_mask
+dataframe_phenotypes$phenotype <- ifelse(SVD_mask, "No SVD", dataframe_phenotypes$phenotype)
+
+## Update phenotyp column where it's empty to "unspecific SVD"
+dataframe_phenotypes$phenotype <- ifelse(dataframe_phenotypes$phenotype == "", "unspecific SVD", dataframe_phenotypes$phenotype)
+```
+
+# SVD and CAA burden scores {#svdandcaaburdenscores}
+
+In this section, we calculate burden scores for small vessel disease (SVD) and cerebral amyloid angiopathy (CAA) based on specific clinical and imaging criteria. For each patient in the dataframe, we initialize burden score vectors and then add points according to the presence and severity of various markers. The SVD burden score includes criteria such as the presence of cerebral microbleeds (CMB), Fazekas scores, lacunes, and perivascular spaces (PVS). The CAA burden score includes criteria such as the number of lobar CMBs, Fazekas scores, PVS in the centrum semiovale (CSO), and cortical superficial siderosis (cSS). These scores are then added as new columns to the dataframe for further analysis.
+
+```
+# Creating a new dataframe with the specified variables (wmh, lacune, pvs)
+dataframe_burdenscore <- data.frame(
+  cmb_all = cmb_data$CMB_all_count, 
+  cmb_lobar = cmb_data$CMB_lobar_count, 
+  wmh_fazekas_deep = wmh_fazekas_data$Fazekas_White_matter, 
+  wmh_fazekas_periventricular = wmh_fazekas_data$Fazekas_Periventricular,
+  lacune_all = lacune_data$lacune_summation, 
+  pvs_bg = pvs_data$pvs_bg, 
+  pvs_cso = pvs_data$pvs_cso, 
+  css_focal = ich_css_data$css_focal,
+  css_disseminated = ich_css_data$css_disseminated)
+```
+```
+# Calculation of burden scores
+
+## SVD burden score
+## Initialize a vector to store the burden scores
+SVD_burden_score <- rep(0, nrow(dataframe_burdenscore))
+
+### Criteria 1: Add 1 point if cmb_all >= 1
+SVD_burden_score <- SVD_burden_score + (dataframe_burdenscore$cmb_all >= 1)
+
+### Criteria 2: Add 1 point if (wmh_fazekas_deep = 2 or 3) or (wmh_fazekas_periventricular = 3)
+SVD_burden_score <- SVD_burden_score + ((dataframe_burdenscore$wmh_fazekas_deep %in% c(2, 3)) |
+                                (dataframe_burdenscore$wmh_fazekas_periventricular == 3))
+
+### Criteria 3: Add 1 point if lacune_all >= 1
+SVD_burden_score <- SVD_burden_score + (dataframe_burdenscore$lacune_all >= 1)
+
+### Criteria 4: Add 1 point if pvs_bg > 20
+SVD_burden_score <- SVD_burden_score + (dataframe_burdenscore$pvs_bg > 20)
+
+## Add the burden score vector as a new column to your dataframe
+dataframe_burdenscore$SVD_burden_score <- SVD_burden_score
+
+
+## CAA burden score
+## Initialize a vector to store the CAA burden scores
+CAA_burden_score <- rep(0, nrow(dataframe_burdenscore))
+
+### Criteria 1: Add 1 point if 2 <= cmb_lobar <= 4
+CAA_burden_score <- CAA_burden_score + (dataframe_burdenscore$cmb_lobar >= 2 & dataframe_burdenscore$cmb_lobar <= 4)
+
+### Criteria 2: Add 2 points if cmb_lobar >= 5
+CAA_burden_score <- CAA_burden_score + 2 * (dataframe_burdenscore$cmb_lobar >= 5)
+
+### Criteria 3: Add 1 point if (wmh_fazekas_deep = 2 or 3) or (wmh_fazekas_periventricular = 3)
+CAA_burden_score <- CAA_burden_score + (dataframe_burdenscore$wmh_fazekas_deep %in% c(2, 3) | dataframe_burdenscore$wmh_fazekas_periventricular == 3)
+
+### Criteria 4: Add 1 point if pvs_cso > 20
+CAA_burden_score <- CAA_burden_score + (dataframe_burdenscore$pvs_cso > 20)
+
+### Criteria 5: Add 1 point if css_focal = 1
+CAA_burden_score <- CAA_burden_score + (dataframe_burdenscore$css_focal == 1)
+
+### Criteria 6: Add 2 points if css_disseminated = 1
+CAA_burden_score <- CAA_burden_score + 2 * (dataframe_burdenscore$css_disseminated == 1)
+
+## Add the CAA burden score vector as a new column to your dataframe
+dataframe_burdenscore$CAA_burden_score <- CAA_burden_score
+
+```
+
+# Statistical Analysis {#statisticalanalysis}
+
+
+## Exploratory Data Analysis {#exploratorydataanalysis}
+In this section, we visualise key variables through histograms and discuss potential outliers or missing values.
+
+```
+## Exploratory Data Analysis
+
+# Create histograms for each variable
+hist_age <- ggplot(dataframe_tableone, aes(x = age)) +
+  geom_histogram(binwidth = 1, fill = "skyblue", color = "black", alpha = 0.2) +
+  labs(title = "Histogram of Age", x = "Age", y = "Frequency")
+
+hist_moca <- ggplot(dataframe_tableone, aes(x = moca)) +
+  geom_histogram(binwidth = 1, fill = "lightgreen", color = "black", alpha = 0.2) +
+  labs(title = "Histogram of MOCA Total", x = "MOCA Total", y = "Frequency")
+
+hist_cmb <- ggplot(dataframe_tableone, aes(x = cmb_all)) +
+  geom_histogram(binwidth = 1, fill = "salmon", color = "black", alpha = 0.2) +
+  labs(title = "Histogram of CMB Count", x = "CMB Count", y = "Frequency")
+
+# Arrange histograms in one plot
+grid.arrange(hist_age, hist_moca, hist_cmb, ncol = 3)
+
+# Print the plot (this will display in the Plots pane in RStudio)
+print(grid.arrange(hist_age, hist_moca, hist_cmb, ncol = 3))
+
+
+# Analyse outliers (wrong units, different measuring condition, mistakes)
+
+# Analyse NA (possibilites: impute with mean or drop)
+```
+
+## Table One {#tableone}
+
+In the this section, we construct a descriptive summary table that compares demographic and clinical variables across the 5 different phenotypic groups.
+
+```
+## Table One 
+dataframe_tableone <- data.frame(
+  age = clinical_data$age.bl, 
+  sex = clinical_data$pat.sex, 
+  moca = clinical_data$moca.total,
+  cmb_all = cmb_data$CMB_all_count, 
+  phenotype = dataframe_phenotypes$phenotype)
+
+tableone <- CreateTableOne(vars = c("age", "sex", "moca", "cmb_all"), strata = phenotype, data = dataframe_tableone, test = FALSE)
+
+# Print the summary table
+print(tableone)
+```
+## Statistical Tests {#statisticaltests}
+
+In this section, we apply statistical tests such as Chi-square test for categorical variables, Mann-Whitney U test for non-normally distributed or ordinal variables and Welch's t-test for normally distributed continuous variables. These tests provide quantitative assessments of associations or differences between phenotypic groups, helping us determine the statistical significance of observed patterns.
+
+```
+##Test for Chi-Square (provisorisch)
+# Add chi-square test for sex
+sex_table <- table(dataframe_tableone$sex)
+chi_square_sex <- chisq.test(sex_table)
+tableone$overall <- list(
+  c("Chi-square (sex)", format.pval(chi_square_sex$p.value)))
+
+# Add Mann-Whitney U test for moca (assuming non-normal or ordinal)
+moca_test <- wilcox.test(dataframe_tableone$moca)
+tableone$overall <- list(
+  tableone$overall,
+  c("Mann-Whitney U (moca)", format.pval(moca_test$p.value)))
+
+# Add Welch's t-test for cmb_all (assuming independent normal distribution)
+cmb_all_test <- t.test(dataframe_tableone$cmb_all ~ 1)
+tableone$overall <- list(
+  tableone$overall,
+  c("Welch's t-test (cmb_all)", format.pval(cmb_all_test$p.value)))
+
+# Print the summary table with added tests
+print(tableone)
+
+```
